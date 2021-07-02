@@ -1,0 +1,163 @@
+#include <windows.h>
+#include <stdio.h>
+#include <time.h>
+#include <conio.h>
+#include <string.h>
+#define MAX_SPOOL 5                    // 打印请求队列大小，最多能存放五个请求
+#define DELAY rand()%100                 // 用随机数产生文件大小，以KB为单位
+
+typedef struct{
+	char file_name[200];
+	int file_size;
+}FILE_INFO;
+typedef struct{
+	int spool_count;
+	int spool_in;
+	int spool_out;
+	FILE_INFO spool_queue[MAX_SPOOL];
+}SPOOL;
+
+SPOOL spool_buffer;
+HANDLE h_spool_mutex;
+HANDLE h_screen_mutex;
+HANDLE h_send;                        // 发送线程的句柄
+HANDLE h_semaphore_spool;
+HANDLE h_spoolthread_to_mainthread;
+HANDLE h_sendthread_to_mainthread;
+HANDLE h_spool_thread;                 // 打印线程的句柄
+HANDLE h_spool_full;
+HANDLE h_spool_empty;
+HANDLE h_print;
+	 
+DWORD WINAPI sendthread(LPVOID lpParameter)   // 打印请求接收/发送线程的线程函数
+{
+	FILE_INFO file_info;
+	while(1)
+	{
+	WaitForSingleObject(h_print,INFINITE);
+	WaitForSingleObject(h_screen_mutex,INFINITE);
+	system("cls");
+	printf("enter file name:");
+	scanf("%s",file_info.file_name);
+	ReleaseMutex(h_screen_mutex);
+	srand( (unsigned)time( NULL ) );
+	file_info.file_size=DELAY;
+
+	WaitForSingleObject(h_spool_empty,INFINITE);
+    WaitForSingleObject(h_spool_mutex,INFINITE);
+	spool_buffer.spool_count++;
+	spool_buffer.spool_queue[spool_buffer.spool_in]=file_info;
+	spool_buffer.spool_in=(spool_buffer.spool_in+1)%MAX_SPOOL;
+	ReleaseMutex(h_spool_mutex);
+	ReleaseSemaphore(h_spool_full,1,NULL);
+	ReleaseSemaphore(h_sendthread_to_mainthread,1,NULL);
+
+	}
+}
+void print_space(int num){         //显示若干个空格
+	int i;
+	for(i=0;i<num;i++){
+		printf(" ");
+	}
+}
+
+void list_spool_queue()           //列出打印请求队列
+{
+	char buffer[10];
+	WaitForSingleObject(h_spool_mutex,INFINITE);
+	WaitForSingleObject(h_screen_mutex,INFINITE);
+  	system("cls");
+	printf(" number of files in the spool queue:%d\n\n",spool_buffer.spool_count);
+	printf("             spool queue                  \n");
+	printf("|--------|-------------------------------------|--------------|\n");
+	printf("| index  | filename                            | filesize(KB) |\n");
+	printf("|--------|-------------------------------------|--------------|\n");
+	for(int i=0;i<MAX_SPOOL;i++)
+	{
+		printf("| %d",i);
+		itoa(i, buffer, 10 );
+		print_space(7-strlen(buffer));
+		printf("| %s",spool_buffer.spool_queue[i].file_name);
+		print_space(36-strlen(spool_buffer.spool_queue[i].file_name));
+		printf("| %d",spool_buffer.spool_queue[i].file_size);
+		itoa(spool_buffer.spool_queue[i].file_size,buffer,10);
+		print_space(12-strlen(buffer));
+		printf(" |\n");
+	}
+	printf("|--------|-------------------------------------|--------------|\n");
+	ReleaseMutex(h_spool_mutex);
+	ReleaseMutex(h_screen_mutex);
+}
+
+DWORD WINAPI spool_thread(LPVOID lpParameter)     // 打印线程的线程函数
+{
+	while(1)
+	{
+	WaitForSingleObject(h_semaphore_spool,INFINITE);
+	WaitForSingleObject(h_spool_full,INFINITE);
+    WaitForSingleObject(h_spool_mutex,INFINITE);
+	WaitForSingleObject(h_screen_mutex,INFINITE);
+	spool_buffer.spool_count--;
+	printf("print a file in spool:\nfilename:%s\n",spool_buffer.spool_queue[spool_buffer.spool_out].file_name);
+	strcpy(spool_buffer.spool_queue[spool_buffer.spool_out].file_name,"");
+	spool_buffer.spool_queue[spool_buffer.spool_out].file_size=0;
+	spool_buffer.spool_out=(spool_buffer.spool_out+1)%MAX_SPOOL;
+	ReleaseMutex(h_screen_mutex);
+	ReleaseMutex(h_spool_mutex);
+	ReleaseSemaphore(h_spool_empty,1,NULL);
+    ReleaseSemaphore(h_spoolthread_to_mainthread,1,NULL);
+	}
+	return 0;
+}
+
+
+
+int main(int argc,char *argv[]){    // 主程序
+	char select;
+	h_send=CreateThread(NULL,0,sendthread,NULL,0,NULL);
+	h_spool_thread=CreateThread(NULL,0,spool_thread,NULL,0,NULL);
+	h_spool_mutex=CreateMutex(NULL,FALSE,NULL);
+	h_screen_mutex=CreateMutex(NULL,FALSE,NULL);
+	h_spool_full=CreateSemaphore(NULL,0,MAX_SPOOL,NULL);
+	h_spool_empty=CreateSemaphore(NULL,MAX_SPOOL,MAX_SPOOL,NULL);
+	h_print=CreateSemaphore(NULL,0,1,NULL);
+	h_semaphore_spool=CreateSemaphore(NULL,0,1,NULL);
+	h_sendthread_to_mainthread=CreateSemaphore(NULL,0,1,NULL);
+	h_spoolthread_to_mainthread=CreateSemaphore(NULL,0,1,NULL);
+	WaitForSingleObject(h_screen_mutex,INFINITE);
+	while(1){
+		printf("|-----------------------------------|\n");
+		printf("|  1:send a print request           |\n");
+		printf("|  2:list spool queue               |\n");
+		printf("|  3:print a file in spool          |\n");
+    	printf("|  4:exit                           |\n");
+		printf("|-----------------------------------|\n");
+		printf("select a function(1~4):");
+		do{
+			select=(char)getch();
+		}while(select!='1'&&select!='2'&&select!='3'&&select!='4');
+		system("cls");
+		ReleaseMutex(h_screen_mutex);
+		switch(select){
+		case '1':
+			ReleaseSemaphore(h_print,1,NULL);
+			WaitForSingleObject(h_sendthread_to_mainthread,INFINITE);
+			break;
+		case '2':
+			list_spool_queue();
+			break;
+		case '3':
+			ReleaseSemaphore(h_semaphore_spool,1,NULL);
+			WaitForSingleObject(h_spoolthread_to_mainthread,INFINITE);
+			break;
+		case '4':
+			return 0;
+		}
+		WaitForSingleObject(h_screen_mutex,INFINITE);
+		printf("\nPress any key to return to main menu.");
+		getch();
+		system("cls");
+		ReleaseMutex(h_screen_mutex);
+	}
+	return 0;
+}
